@@ -17,13 +17,17 @@ entry:
   ret i32 %add
 }
 
+; The compact descriptor is exactly two 4-byte words: code entry then TOC base,
+; immediately followed by the switch back to .text -- no third (environment)
+; word and no .quad. (Anchor on .text rather than an unscoped CHECK-NOT, which
+; would spuriously match the standard PPC64 traceback marker `.long 0`/`.quad 0`
+; that emitFunctionBodyEnd emits inside .text for every ppc64 function.)
 ; CHECK:      .section .opd,"aw",@progbits
 ; CHECK-NEXT: leaf:
 ; CHECK-NEXT: .p2align 2
 ; CHECK-NEXT: .long .Lfunc_begin0
 ; CHECK-NEXT: .long .TOC.@tocbase
-; CHECK-NOT:  .quad
-; CHECK-NOT:  .long 0
+; CHECK-NEXT: .text
 
 ; ELFV1:      .section .opd,"aw",@progbits
 ; ELFV1-NEXT: leaf:

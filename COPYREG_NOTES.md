@@ -108,6 +108,36 @@ other PPC subtarget is byte-for-byte unchanged:
 
 These bare cross-class copies are inherent to ILP32-on-PPC64 (i32 datalayout pointers) and
 never arise on other subtargets, so `copyPhysReg` is the correct universal realization point;
-the gate guarantees no non-Lv2 path changes. FastISel: the probes use `-O2` (FastISel is an
-`-O0` path); the `-O0` behaviour is checked separately in the verification step and recorded
-in the final report.
+the gate guarantees no non-Lv2 path changes.
+
+**FastISel:** confirmed it has its own copy of this gap. At `-O0`, `PPCMaterializeGV`
+(`PPCFastISel.cpp:2053`) asserts `VT == MVT::i64 && "Non-address!"` — FastISel assumes LP64
+addresses, which is false on Lv2 (i32 pointers). Per the task, FastISel is **disabled for
+Lv2** (`PPC::createFastISel` returns nullptr when `isLv2ABI()`), falling back to SelectionDAG,
+rather than duplicating the ILP32 handling. After this, all three probes compile at both `-O0`
+and `-O2`.
+
+## Phase 1 — RESULTS
+
+Files changed:
+- `llvm/lib/Target/PowerPC/PPCInstrInfo.cpp` — `copyPhysReg`: Lv2-gated GPRC↔G8RC lowering
+  (GPRC→G8RC = `RLDICL …,0,32` zero-extend; G8RC→GPRC = `OR` of `sub_32`).
+- `llvm/lib/Target/PowerPC/PPCFastISel.cpp` — `createFastISel` returns nullptr on Lv2.
+- `llvm/test/CodeGen/PowerPC/lv2-ptr-widen.ll` — new regression test (load+store base widen is
+  an explicit `clrldi`; non-Lv2 ppc64 emits no `clrldi`).
+- `llvm/test/CodeGen/PowerPC/lv2-opd.ll` — fixed the bad-test scoping (anchor on `.text`).
+
+Probe results (`-c`, both -O0 and -O2): probe1 PASS, probe2 PASS, probe3 PASS. probe3 codegen:
+`ld` (TOC slot) → `clrldi 3, 3, 32` (the zero-extend) → `lwa/lwz`. probe1 indirect call:
+`clrldi` widenings, OPD load, `mtctr`/`bctrl`, TOC restore `ld 2, 40(1)`.
+
+Regression gates (measured against the Phase -1 baseline, NOT an assumed-green tree):
+- `check-llvm-codegen-powerpc`: **7 failures, all pre-existing** — `2006-01-20-ShiftPartsCrash`,
+  `2006-08-15-SelectionCrash`, `2006-12-07-LargeAlloca`, `2006-12-07-SelectCrash`,
+  `2007-11-19-VectorSplitting`, `load-shift-combine`, `misched`. Proven identical by stashing
+  the two code changes, rebuilding `llc`, and re-running: same 7 fail. **0 new failures.** The
+  three lv2 tests (`lv2-opd`, `lv2-indirect-call`, `lv2-ptr-widen`) PASS.
+- `check-lld`: 1 failure, `MachO/invalid/stub-link.s`, cause `unable to get target for
+  'x86_64-apple-ios'` — this is a PowerPC-only build (`LLVM_TARGETS_TO_BUILD=PowerPC`), so the
+  X86/MachO test is unsupported-but-not-marked. Environmental/pre-existing, unrelated to the
+  PPC backend change. **0 new failures.**

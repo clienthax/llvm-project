@@ -2467,7 +2467,11 @@ FastISel *PPC::createFastISel(FunctionLoweringInfo &FuncInfo,
                               const LibcallLoweringInfo *LibcallLowering) {
   // Only available on 64-bit for now.
   const PPCSubtarget &Subtarget = FuncInfo.MF->getSubtarget<PPCSubtarget>();
-  if (Subtarget.isPPC64())
+  // PS3 GameOS (Cell OS Lv-2) is ILP32-on-PPC64: pointers are i32, but this
+  // FastISel assumes LP64 throughout (e.g. PPCMaterializeGV asserts the address
+  // type is i64). Rather than duplicate the ILP32 narrow/widen handling here,
+  // fall back to SelectionDAG isel on Lv2.
+  if (Subtarget.isPPC64() && !Subtarget.isLv2ABI())
     return new PPCFastISel(FuncInfo, LibInfo, LibcallLowering);
   return nullptr;
 }
