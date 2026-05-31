@@ -207,17 +207,27 @@ let isCall = 1, PPC970_Unit = 7, isCodeGenOnly = 1,
     Requires<[IsPPC64]>;
 }
 
-// PS3/Lv2 (ILP32 on PPC64): the TOC-restore address `r1 + 40` is computed in
-// the 64-bit stack-register type, so it is matched by the i64-typed iaddrX4_g8
-// complex pattern instead of iaddrX4 (which is iPTR == i32 on Lv2 and therefore
-// will not match the 64-bit address). These reuse the existing, already-scheduled
-// BCTRL8_LDinto_toc{,_RM} instructions; the IsLv2 predicate keeps non-Lv2 output
-// unchanged (there iaddrX4 == i64 already matches).
-//let Predicates = [IsPPC64, IsLv2] in {
-  // TODO this causes compiler errors currently
-//  def : Pat<(PPCbctrl_load_toc iaddrX4:$src), (BCTRL8_LDinto_toc $src)>;
-//  def : Pat<(PPCbctrl_load_toc_rm iaddrX4:$src), (BCTRL8_LDinto_toc_RM $src)>;
-//}
+// PS3/Lv2 (ILP32 on PPC64) indirect-call TOC restore. Like AIX's BL8_LDinto_toc
+// the save slot is the constant r1+40, so RST=2/RA=1/D=40 are hardcoded and there
+// is no memrix operand; unlike AIX this is the indirect (bctrl) analog, so it also
+// uses CTR8 and (because the ld reads r1 directly) X1. The pattern is on the
+// instruction and matches the operand-less PPCbctrl_load_toc_lv2{,_rm} nodes.
+let isCall = 1, PPC970_Unit = 7, isCodeGenOnly = 1,
+    Defs = [LR8, X2], Uses = [CTR8, RM, X1], RST = 2, RA = 1, D = 40 in {
+  def BCTRL8_LDinto_toc_lv2 :
+    XLForm_2_ext_and_DSForm_1<19, 528, 20, 0, 1, 58, 0, (outs), (ins),
+                              "bctrl\n\tld 2, 40(1)", IIC_BrB,
+                              [(PPCbctrl_load_toc_lv2)]>,
+    Requires<[IsPPC64, IsLv2]>;
+}
+let isCall = 1, PPC970_Unit = 7, isCodeGenOnly = 1,
+    Defs = [LR8, X2, RM], Uses = [CTR8, RM, X1], RST = 2, RA = 1, D = 40 in {
+  def BCTRL8_LDinto_toc_lv2_RM :
+    XLForm_2_ext_and_DSForm_1<19, 528, 20, 0, 1, 58, 0, (outs), (ins),
+                              "bctrl\n\tld 2, 40(1)", IIC_BrB,
+                              [(PPCbctrl_load_toc_lv2_rm)]>,
+    Requires<[IsPPC64, IsLv2]>;
+}
 
 let Predicates = [IsAIX] in {
   let isCall = 1, PPC970_Unit = 7, isCodeGenOnly = 1,
