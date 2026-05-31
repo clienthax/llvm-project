@@ -5388,9 +5388,14 @@ static unsigned getCallOpcode(PPCTargetLowering::CallFlags CFlags,
     // as it is not saved or used.
     if (Subtarget.usePointerGlueHelper())
       RetOpc = PPCISD::BL_LOAD_TOC;
+    else if (!isTOCSaveRestoreRequired(Subtarget))
+      RetOpc = PPCISD::BCTRL;
     else
-      RetOpc = isTOCSaveRestoreRequired(Subtarget) ? PPCISD::BCTRL_LOAD_TOC
-                                                   : PPCISD::BCTRL;
+      // On Lv2 the TOC restore address (r1+40) is constant and hardcoded into
+      // the instruction, so use a dedicated operand-less node; every other
+      // TOC-based ABI carries the restore address as the node's operand.
+      RetOpc = Subtarget.isLv2ABI() ? PPCISD::BCTRL_LOAD_TOC_LV2
+                                    : PPCISD::BCTRL_LOAD_TOC;
   } else if (Subtarget.isUsingPCRelativeCalls()) {
     assert(Subtarget.is64BitELFABI() && "PC Relative is only on ELF ABI.");
     RetOpc = PPCISD::CALL_NOTOC;
@@ -5415,6 +5420,9 @@ static unsigned getCallOpcode(PPCTargetLowering::CallFlags CFlags,
       llvm_unreachable("Unknown call opcode");
     case PPCISD::BCTRL_LOAD_TOC:
       RetOpc = PPCISD::BCTRL_LOAD_TOC_RM;
+      break;
+    case PPCISD::BCTRL_LOAD_TOC_LV2:
+      RetOpc = PPCISD::BCTRL_LOAD_TOC_LV2_RM;
       break;
     case PPCISD::BCTRL:
       RetOpc = PPCISD::BCTRL_RM;
@@ -5712,8 +5720,10 @@ buildCallOperands(SmallVectorImpl<SDValue> &Ops,
     // of the TOC save offset to the stack pointer. This must be the second
     // operand: after the chain input but before any other variadic arguments.
     // For 64-bit ELFv2 ABI with PCRel, do not restore the TOC as it is not
-    // saved or used.
-    if (isTOCSaveRestoreRequired(Subtarget)) {
+    // saved or used. On Lv2 the restore address is the constant r1+40, baked
+    // into the BCTRL8_LDinto_toc_lv2 instruction, so no address operand is
+    // pushed here (the call node is operand-less, like plain BCTRL8).
+    if (isTOCSaveRestoreRequired(Subtarget) && !Subtarget.isLv2ABI()) {
       const MCRegister StackPtrReg = Subtarget.getStackPointerRegister();
 
       SDValue StackPtr = DAG.getRegister(StackPtrReg, RegVT);
