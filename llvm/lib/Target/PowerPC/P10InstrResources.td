@@ -323,7 +323,7 @@ def : InstRW<[P10W_BR_2C, P10W_DISP_ANY, P10BR_Read],
 // 2 Cycles Branch operations, 2 input operands
 def : InstRW<[P10W_BR_2C, P10W_DISP_ANY, P10BR_Read, P10BR_Read],
       (instrs
-    BC, BCTR, BCTR8, BCTRL, BCTRL8, BCTRL8_LDinto_toc, BCTRL8_LDinto_toc_RM, BCTRL8_RM, BCTRL_LWZinto_toc, BCTRL_LWZinto_toc_RM, BCTRL_RM, BCn, BDNZ, BDNZ8, BDNZm, BDNZp, BDZ, BDZ8, BDZm, BDZp, TAILBCTR, TAILBCTR8, gBC, gBCat,
+    BC, BCTR, BCTR8, BCTRL, BCTRL8, BCTRL8_LDinto_toc, BCTRL8_LDinto_toc_lv2, BCTRL8_LDinto_toc_RM, BCTRL8_LDinto_toc_lv2_RM, BCTRL8_RM, BCTRL_LWZinto_toc, BCTRL_LWZinto_toc_RM, BCTRL_RM, BCn, BDNZ, BDNZ8, BDNZm, BDNZp, BDZ, BDZ8, BDZm, BDZp, TAILBCTR, TAILBCTR8, gBC, gBCat,
     BDNZA, BDNZAm, BDNZAp, BDZA, BDZAm, BDZAp, gBCA, gBCAat,
     BCL, BCLalways, BCLn, BDNZL, BDNZLm, BDNZLp, BDZL, BDZLm, BDZLp, gBCL, gBCLat,
     BDNZLA, BDNZLAm, BDNZLAp, BDZLA, BDZLAm, BDZLAp, gBCLA, gBCLAat
