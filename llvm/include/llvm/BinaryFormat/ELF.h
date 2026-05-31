@@ -367,6 +367,7 @@ enum {
   ELFOSABI_AMDGPU_HSA = 64,    // AMD HSA runtime
   ELFOSABI_AMDGPU_PAL = 65,    // AMD PAL runtime
   ELFOSABI_AMDGPU_MESA3D = 66, // AMD GCN GPUs (GFX6+) for MESA runtime
+  ELFOSABI_CELLOSLV2 = 0x66,   // Sony Cell OS Lv-2 (PlayStation 3 GameOS)
   ELFOSABI_ARM = 97,           // ARM
   ELFOSABI_ARM_FDPIC = 65,     // ARM FDPIC
   ELFOSABI_C6000_ELFABI = 64,  // Bare-metal TMS320C6000

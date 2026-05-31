@@ -2022,6 +2022,28 @@ void PPCLinuxAsmPrinter::emitFunctionEntryLabel() {
     return AsmPrinter::emitFunctionEntryLabel();
   }
 
+  // PS3 GameOS (Cell OS Lv-2): the official procedure descriptor is the compact
+  // 8-byte form `{ u32 code_entry; u32 toc }` (rpcs3 `ppu_func_opd_t`), 4-byte
+  // aligned, with no environment word. See LV2_ABI.md.
+  if (Subtarget->isLv2ABI()) {
+    MCSectionSubPair Current = OutStreamer->getCurrentSection();
+    MCSectionELF *Section = OutStreamer->getContext().getELFSection(
+        ".opd", ELF::SHT_PROGBITS, ELF::SHF_WRITE | ELF::SHF_ALLOC);
+    OutStreamer->switchSection(Section);
+    OutStreamer->emitLabel(CurrentFnSym);
+    OutStreamer->emitValueToAlignment(Align(4));
+    // Word 0: absolute code address, R_PPC64_ADDR32 (from FK_Data_4).
+    OutStreamer->emitValue(
+        MCSymbolRefExpr::create(CurrentFnSymForSize, OutContext), 4 /*size*/);
+    // Word 1: low 32 bits of the module TOC base, R_PPC64_TOC (from FK_Data_4),
+    // baked by lld with no surviving dynamic reloc for a fixed EXEC.
+    MCSymbol *TOCSym = OutContext.getOrCreateSymbol(StringRef(".TOC."));
+    OutStreamer->emitValue(
+        MCSymbolRefExpr::create(TOCSym, PPC::S_TOCBASE, OutContext), 4 /*size*/);
+    OutStreamer->switchSection(Current.first, Current.second);
+    return;
+  }
+
   // Emit an official procedure descriptor.
   MCSectionSubPair Current = OutStreamer->getCurrentSection();
   MCSectionELF *Section = OutStreamer->getContext().getELFSection(

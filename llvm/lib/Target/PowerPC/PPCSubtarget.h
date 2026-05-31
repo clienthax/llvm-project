@@ -208,6 +208,14 @@ public:
   bool isSVR4ABI() const { return !isAIXABI(); }
   bool isELFv2ABI() const;
 
+  /// True for the PS3 GameOS (Cell OS Lv-2) target `powerpc64-scei-lv2`. Lv2 is
+  /// a 64-bit ELFv1 variant: the frame layout and TOC save/restore are the
+  /// standard ELFv1 ones, but function descriptors are the compact 8-byte
+  /// `{ u32 code; u32 toc }` form (no environment word) and pointers are 32-bit.
+  /// Modeled as an orthogonal predicate rather than a `PPCABI` enum value so the
+  /// ELFv1 machinery it shares is untouched; see LV2_ABI.md §4.
+  bool isLv2ABI() const { return getTargetTriple().getOS() == Triple::Lv2; }
+
   bool is64BitELFABI() const { return isSVR4ABI() && isPPC64(); }
   bool is32BitELFABI() const { return isSVR4ABI() && !isPPC64(); }
   bool isUsingPCRelativeCalls() const;
@@ -255,6 +263,10 @@ public:
   unsigned descriptorTOCAnchorOffset() const {
     assert(usesFunctionDescriptors() &&
            "Should only be called when the target uses descriptors.");
+    // The PS3/Lv2 descriptor is the compact `{ u32 code; u32 toc }` form, so the
+    // toc anchor is at offset 4 (no 64-bit code-entry word ahead of it).
+    if (isLv2ABI())
+      return 4;
     return IsPPC64 ? 8 : 4;
   }
 

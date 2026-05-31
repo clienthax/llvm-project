@@ -1581,9 +1581,18 @@ void PPC64::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
   case R_PPC64_DTPREL64:
     val -= dynamicThreadPointerOffset;
     [[fallthrough]];
+  case R_PPC64_TOC:
+    // The PS3/Lv2 compact OPD toc word is a 4-byte field holding the low 32
+    // bits of the module TOC base; every other ABI stores the full 64-bit TOC
+    // base. R_PPC64_TOC is only emitted into .opd toc words, so keying the
+    // width on the Lv2 output OSABI is exact. See LV2_ABI.md §4.
+    if (ctx.arg.osabi == ELFOSABI_CELLOSLV2) {
+      write32(ctx, loc, val);
+      break;
+    }
+    [[fallthrough]];
   case R_PPC64_ADDR64:
   case R_PPC64_REL64:
-  case R_PPC64_TOC:
     write64(ctx, loc, val);
     break;
   case R_PPC64_REL14: {

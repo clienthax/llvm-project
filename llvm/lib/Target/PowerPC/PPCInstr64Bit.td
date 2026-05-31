@@ -207,6 +207,18 @@ let isCall = 1, PPC970_Unit = 7, isCodeGenOnly = 1,
     Requires<[IsPPC64]>;
 }
 
+// PS3/Lv2 (ILP32 on PPC64): the TOC-restore address `r1 + 40` is computed in
+// the 64-bit stack-register type, so it is matched by the i64-typed iaddrX4_g8
+// complex pattern instead of iaddrX4 (which is iPTR == i32 on Lv2 and therefore
+// will not match the 64-bit address). These reuse the existing, already-scheduled
+// BCTRL8_LDinto_toc{,_RM} instructions; the IsLv2 predicate keeps non-Lv2 output
+// unchanged (there iaddrX4 == i64 already matches).
+//let Predicates = [IsPPC64, IsLv2] in {
+  // TODO this causes compiler errors currently
+//  def : Pat<(PPCbctrl_load_toc iaddrX4:$src), (BCTRL8_LDinto_toc $src)>;
+//  def : Pat<(PPCbctrl_load_toc_rm iaddrX4:$src), (BCTRL8_LDinto_toc_RM $src)>;
+//}
+
 let Predicates = [IsAIX] in {
   let isCall = 1, PPC970_Unit = 7, isCodeGenOnly = 1,
       Defs = [LR8, X2], Uses = [RM, X1], RST = 2, RA = 1, D = 40 in {

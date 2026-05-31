@@ -990,6 +990,10 @@ class RegConstraint<string C> {
 def iaddr    : ComplexPattern<iPTR, 2, "SelectAddrImm",     [], []>; // "stb"
 // ds-form
 def iaddrX4  : ComplexPattern<iPTR, 2, "SelectAddrImmX4",   [], []>; // "std"
+// ds-form, i64-typed: matches a 64-bit register base + DS displacement even when
+// iPTR is i32 (PS3/Lv2 ILP32 on PPC64), where the stack/TOC-restore address is a
+// 64-bit value but iaddrX4 (keyed on iPTR == i32) would not match it.
+def iaddrX4_g8 : ComplexPattern<i64, 2, "SelectAddrImmX4", [], []>;
 // dq-form
 def iaddrX16 : ComplexPattern<iPTR, 2, "SelectAddrImmX16",  [], []>; // "stxv"
 // 8LS:d-form
