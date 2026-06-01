@@ -5523,8 +5523,16 @@ static SDValue transformCallee(const SDValue &Callee, SelectionDAG &DAG,
 
       SymName = getExternalFunctionEntryPointSymbol(SymName)->getName().data();
     }
+    // PS3/Lv2: like the GlobalAddress case above, a direct-call target must
+    // reference the function's code-entry symbol (".foo"), not the bare symbol
+    // that labels the .opd descriptor. This also covers compiler-generated
+    // libcalls (memcpy/memset/...), whose callee is an ExternalSymbol rather than
+    // a GlobalAddress; without it they branch into the .opd descriptor bytes.
+    unsigned TargetFlags = UsePlt ? PPCII::MO_PLT : 0;
+    if (Subtarget.isLv2ABI())
+      TargetFlags = PPCII::MO_LV2_FUNC_ENTRY;
     return DAG.getTargetExternalSymbol(SymName, Callee.getValueType(),
-                                       UsePlt ? PPCII::MO_PLT : 0);
+                                       TargetFlags);
   }
 
   // No transformation needed.
