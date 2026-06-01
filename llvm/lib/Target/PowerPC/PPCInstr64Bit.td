@@ -1516,6 +1516,13 @@ def ADDItoc8 : PPCEmitTimePseudo<(outs g8rc:$rD), (ins g8rc_nox0:$reg, tocentry:
 let mayLoad = 1 in
 def LDtocL: PPCEmitTimePseudo<(outs g8rc:$rD), (ins tocentry:$disp, g8rc_nox0:$reg),
                    "#LDtocL", []>, isPPC64;
+// PS3/Lv2 (ILP32 on PPC64): the TOC (.got2) slot is a 4-byte pointer, so the
+// TOC-low load must be a 32-bit, zero-extending lwz (lowered to LWZ8) rather
+// than LDtocL's 64-bit ld -- on big-endian a 64-bit load of a 4-byte slot reads
+// the adjacent slot. Same operands as LDtocL; only the lowered opcode differs.
+let mayLoad = 1 in
+def LWZtocL8: PPCEmitTimePseudo<(outs g8rc:$rD), (ins tocentry:$disp, g8rc_nox0:$reg),
+                   "#LWZtocL8", []>, isPPC64;
 }
 
 // Support for thread-local storage.

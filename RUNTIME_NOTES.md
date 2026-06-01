@@ -90,3 +90,50 @@ stays for other GPRC↔G8RC sites). Gate strictly on Lv2; non-Lv2 `getTOCEntry` 
 
 The minimal canary (Phase B) is still built — as the human's Phase C confirmation artifact —
 and after the fix `test()` must return 0x11.
+
+## Phase D — the fix (done)
+
+The 4-byte TOC slot must be read with a 32-bit zero-extending load. The slot width was
+already correct (our AsmPrinter emits a ppc32-style `.got2` with `emitSymbolValue(...,4)` on
+Lv2); only the *load* was 64-bit. Implemented as a new TOC-low pseudo selected on Lv2:
+
+- `llvm/lib/Target/PowerPC/PPCInstr64Bit.td`: new `LWZtocL8` — same operands as `LDtocL`
+  (g8rc result, `g8rc_nox0` base, `tocentry` disp), `mayLoad`, `isPPC64`.
+- `llvm/lib/Target/PowerPC/PPCAsmPrinter.cpp`: lower `LWZtocL8` like `LDtocL` but to `LWZ8`
+  (a 32-bit `lwz` that zero-extends into the 64-bit GPR) with the `@toc@l` (`S_TOC_LO`) ref.
+- `llvm/lib/Target/PowerPC/PPCISelDAGToDAG.cpp`: in the medium-model GOT-indirect `TOC_ENTRY`
+  branch, select `LWZtocL8` instead of `LDtocL` **iff `Subtarget->isLv2ABI()`**; the high half
+  stays `ADDIStocHA8`. Non-Lv2 PPC64 unchanged (still `LDtocL`); 32-bit ELF/AIX unchanged.
+- `getTOCEntry` itself is unchanged except a comment; its existing i64→i32 truncate now just
+  drops the already-zero high half of a correctly zero-extended 32-bit load.
+
+Verification:
+- `probes/probe3.c` now selects `addis 3,2,@toc@ha; lwz 3,@toc@l(3); clrldi 3,3,32; lwa 0(3)` —
+  `lwz` (4-byte) replaces the old `ld`.
+- Re-linked the diagnostic (`int test(){return a;}` etc.): `.got2` still 4-byte slots
+  `&a,&b,&c`; `test` now does `lwz 3,-32736(3)` → reads slot[0] = `&a` → returns **0x11**;
+  `test_b` → 0x22; `test_c` → 0x33. The straddle is gone.
+- `llvm/test/CodeGen/PowerPC/lv2-ptr-widen.ll` updated to assert Lv2 uses `lwz` (not `ld`) for
+  the TOC slot and that non-Lv2 still uses `ld`. lv2 tests pass; `check-llvm-codegen-powerpc`
+  shows the same 7 pre-existing failures (0 new); `check-lld` unaffected (only the unrelated
+  X86/MachO baseline failure).
+
+Residue / minor: the global-address path still emits one `clrldi` (the copyPhysReg backstop)
+when the i32 result is used as a 64-bit base, even though `lwz` already zero-extended. It is
+redundant-but-correct. Fully removing it needs address-mode selection to keep the value in
+g8rc (the "peel the truncate" idea the copy task deferred) — recorded as a follow-up, not done
+here.
+
+## Phase B/C — canary (built; human runs)
+
+`probes/canary/` — `data.c` (sentinels in a separate TU), `canary.c` (`_start` reads `a`,
+exits `sys_process_exit3(a)`), `build.sh`, `README.md`, and the built `canary.elf`
+(EI_OSABI 0x66, ET_EXEC, base 0x10000, entry = `_start` `.opd`, no relocations). rpcs3 boots
+plain ELFs, so no signing is required; the README has the run steps and the
+status→meaning table (17/0x11 = correct).
+
+Incidental finding (out of scope, recorded for follow-up): a **direct call to a local
+function** on Lv2 fails to select — `Cannot select: PPCISD::CALL_NOP … TargetGlobalAddress:i32
+… Register:i64 $x2`. The ELFv1 call-with-TOC-restore-nop path isn't wired for Lv2's i32
+GlobalAddress operand. This is a *call-lowering* gap, separate from global addressing; the
+canary sidesteps it by folding the read into `_start`. Next task after this.

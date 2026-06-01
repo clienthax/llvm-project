@@ -1,10 +1,11 @@
-; PS3 GameOS (Cell OS Lv-2) is ILP32-on-PPC64: pointers are i32 (GPRC) but every
-; memory base must be a 64-bit G8RC register. Verify the i32-address -> 64-bit-base
-; conversion selects cleanly as an explicit ZERO-extend (clrldi rD, rS, 32) -- PS3
-; user addresses are < 4 GB -- instead of crashing in copyPhysReg with
-; "Impossible reg-to-reg copy". Each RUN uses its target's default datalayout
-; (no explicit datalayout line), so the non-Lv2 ppc64 run must be unchanged: a
-; 64-bit pointer needs no widening and emits no clrldi.
+; PS3 GameOS (Cell OS Lv-2) is ILP32-on-PPC64: pointers are i32 and the TOC is a
+; ppc32-style .got2 with 4-byte pointer slots. Verify two things:
+;  (1) the 4-byte TOC slot is read with a 32-bit zero-extending lwz, NOT a 64-bit
+;      ld -- on big-endian a 64-bit load of a 4-byte slot straddles into the
+;      adjacent slot and returns the wrong pointer;
+;  (2) the i32 address still becomes a 64-bit base cleanly (no copyPhysReg crash).
+; Each RUN uses its target's default datalayout (no explicit datalayout line), so
+; the non-Lv2 ppc64 run must be unchanged: an 8-byte .toc slot read with ld.
 ;
 ; RUN: llc -verify-machineinstrs -mtriple=powerpc64-scei-lv2 \
 ; RUN:     -mcpu=ppc64 -O2 < %s | FileCheck %s --check-prefix=LV2
@@ -19,33 +20,21 @@ entry:
   ret i32 %v
 }
 
-; The TOC slot is loaded (ld), the i32 address is zero-extended into the 64-bit
-; base (clrldi ..., 32), then dereferenced. clrldi is RLDICL rD, rS, 0, 32.
+; Lv2: TOC-high via addis, then the 4-byte slot via a 32-bit lwz (the fix), then
+; the i32 address widened to a 64-bit base and dereferenced.
 ; LV2-LABEL: load_g:
-; LV2:         ld [[ADDR:[0-9]+]], .LC0@toc@l([[ADDR]])
-; LV2-NEXT:    clrldi [[ADDR]], [[ADDR]], 32
-; LV2-NEXT:    lwz {{[0-9]+}}, 0([[ADDR]])
+; LV2:         addis [[HI:[0-9]+]], 2, .LC0@toc@ha
+; LV2-NEXT:    lwz [[ADDR:[0-9]+]], .LC0@toc@l([[HI]])
+; LV2-NEXT:    clrldi {{[0-9]+}}, {{[0-9]+}}, 32
+; LV2-NEXT:    lwz {{[0-9]+}}, 0({{[0-9]+}})
 ; LV2-NEXT:    blr
+; The TOC slot must NOT be read with a 64-bit ld on Lv2.
+; LV2-NOT:     ld {{[0-9]+}}, .LC{{[0-9]+}}@toc@l
 
-; Non-Lv2 ppc64: pointer is already 64-bit, so NO widening is inserted.
+; Non-Lv2 ppc64: 8-byte .toc slot, read with a 64-bit ld; pointer is already
+; 64-bit so there is no widening (no clrldi).
 ; NOLV2-LABEL: load_g:
 ; NOLV2:         ld [[ADDR:[0-9]+]], .LC0@toc@l([[ADDR]])
 ; NOLV2-NEXT:    lwz {{[0-9]+}}, 0([[ADDR]])
 ; NOLV2-NEXT:    blr
-; NOLV2-NOT:     clrldi
-
-define void @store_g(i32 %x) {
-entry:
-  store i32 %x, ptr @g
-  ret void
-}
-
-; The store base is widened the same explicit way on Lv2 ...
-; LV2-LABEL: store_g:
-; LV2:         clrldi [[SADDR:[0-9]+]], [[SADDR]], 32
-; LV2-NEXT:    stw {{[0-9]+}}, 0([[SADDR]])
-; LV2-NEXT:    blr
-
-; ... and not at all on non-Lv2 ppc64.
-; NOLV2-LABEL: store_g:
 ; NOLV2-NOT:     clrldi

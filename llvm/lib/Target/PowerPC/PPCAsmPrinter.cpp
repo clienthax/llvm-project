@@ -1328,6 +1328,32 @@ void PPCAsmPrinter::emitInstruction(const MachineInstr *MI) {
     EmitToStreamer(*OutStreamer, TmpInst);
     return;
   }
+  case PPC::LWZtocL8: {
+    // PS3/Lv2: like LDtocL, but a 32-bit zero-extending load (lwz, lowered to
+    // LWZ8) of the 4-byte .got2 TOC slot. Transform %xd = LWZtocL8 @sym, %xs.
+    LowerPPCMachineInstrToMCInst(MI, TmpInst, *this);
+
+    // Change the opcode to LWZ8 (lwz into a 64-bit GPR, zero-extending).
+    TmpInst.setOpcode(PPC::LWZ8);
+
+    const MachineOperand &MO = MI->getOperand(1);
+    assert((MO.isGlobal() || MO.isCPI() || MO.isJTI() || MO.isBlockAddress()) &&
+           "Invalid operand for LWZtocL8!");
+
+    const MCSymbol *MOSymbol = getMCSymbolForTOCPseudoMO(MO, *this);
+
+    PPCMCExpr::Specifier VK = getSpecifier(MO);
+    CodeModel::Model CM =
+        IsAIX ? getCodeModel(*Subtarget, TM, MO) : TM.getCodeModel();
+    if (!MO.isCPI() || CM == CodeModel::Large)
+      MOSymbol = lookUpOrCreateTOCEntry(MOSymbol, getTOCEntryTypeForMO(MO), VK);
+
+    VK = PPC::S_TOC_LO;
+    const MCExpr *Exp = symbolWithSpecifier(MOSymbol, VK);
+    TmpInst.getOperand(1) = MCOperand::createExpr(Exp);
+    EmitToStreamer(*OutStreamer, TmpInst);
+    return;
+  }
   case PPC::ADDItocL:
   case PPC::ADDItocL8: {
     // Transform %xd = ADDItocL %xs, @sym

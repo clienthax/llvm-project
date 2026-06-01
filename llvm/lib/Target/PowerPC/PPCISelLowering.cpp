@@ -3061,7 +3061,9 @@ SDValue PPCTargetLowering::getTOCEntry(SelectionDAG &DAG, const SDLoc &dl,
       MachineMemOperand::MOLoad);
   // On Lv2 (ILP32 on PPC64) a pointer is 32-bit while the TOC pointer register
   // and TOC machinery are 64-bit; narrow the loaded TOC slot to the pointer
-  // type. The truncation is free (the address is < 4 GB) and keeps the SDAG
+  // type. The TOC slot itself is 4 bytes (a ppc32-style .got2 entry), and the
+  // TOC_ENTRY is selected to a 32-bit zero-extending load (LWZtocL8), so this
+  // truncate just drops the already-zero high half and keeps the SDAG
   // type-consistent for the i32 GlobalAddress/JumpTable/ConstantPool nodes.
   EVT PtrTy = GA.getValueType();
   if (PtrTy != VT)

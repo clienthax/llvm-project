@@ -6226,8 +6226,15 @@ void PPCDAGToDAGISel::Select(SDNode *N) {
     if (PPCLowering->isAccessedAsGotIndirect(GA)) {
       // If it is accessed as got-indirect, we need an extra LWZ/LD to load
       // the address.
-      SDNode *MN = CurDAG->getMachineNode(
-          isPPC64 ? PPC::LDtocL : PPC::LWZtocL, dl, VT, GA, SDValue(Tmp, 0));
+      // PS3/Lv2 (ILP32 on PPC64): the .got2 TOC slot is 4 bytes, so load it
+      // with a 32-bit zero-extending LWZtocL8 (lwz) rather than the 64-bit
+      // LDtocL -- on big-endian a 64-bit load of a 4-byte slot would read the
+      // adjacent slot. The high half is computed by the same ADDIStocHA8.
+      unsigned LoadOp = isPPC64 ? (Subtarget->isLv2ABI() ? PPC::LWZtocL8
+                                                         : PPC::LDtocL)
+                                : PPC::LWZtocL;
+      SDNode *MN =
+          CurDAG->getMachineNode(LoadOp, dl, VT, GA, SDValue(Tmp, 0));
 
       transferMemOperands(N, MN);
       ReplaceNode(N, MN);
