@@ -2930,9 +2930,19 @@ class IntegerCompareEliminator {
 public:
   IntegerCompareEliminator(SelectionDAG *DAG,
                            PPCDAGToDAGISel *Sel) : CurDAG(DAG), S(Sel) {
-    assert(CurDAG->getTargetLoweringInfo()
-           .getPointerTy(CurDAG->getDataLayout()).getSizeInBits() == 64 &&
-           "Only expecting to use this on 64 bit targets.");
+    // This optimization emits 64-bit-register compare sequences (ADDI8, OR8,
+    // NOR8, RLDICL, EXTSW_32_64, ...), so its real precondition is "64-bit GPRs
+    // are available", i.e. a PPC64 subtarget -- which is exactly the condition
+    // the run gate in tryIntCompareInGPR uses (!TM.isPPC64() -> bail). The
+    // original assert used the *pointer* width as a proxy for that. That proxy
+    // holds for every PPC target except ILP32-on-PPC64 (e.g. PS3/Lv2,
+    // powerpc64-scei-lv2: 64-bit GPRs but 32-bit pointers), where it spuriously
+    // fires even though the 64-bit-register codegen below is valid (the i32
+    // SETCC operands are explicitly extended via {sign,zero}ExtendInputIfNeeded
+    // before any 64-bit sequence). Key the assert off isPPC64() so it matches
+    // the run gate and is behavior-preserving for all existing targets.
+    assert(CurDAG->getMachineFunction().getSubtarget<PPCSubtarget>().isPPC64() &&
+           "Only expecting to use this on 64 bit (PPC64) targets.");
   }
   SDNode *Select(SDNode *N) {
     if (CmpInGPR == ICGPR_None)
