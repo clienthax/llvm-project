@@ -2072,6 +2072,17 @@ void PPCLinuxAsmPrinter::emitFunctionEntryLabel() {
     OutStreamer->emitValue(MCSymbolRefExpr::create(TOCSym, OutContext),
                            4 /*size*/);
     OutStreamer->switchSection(Current.first, Current.second);
+    // Define the function's code-entry symbol ".foo" at the .text entry (the
+    // insertion point here, before the body). On Lv2 `foo` labels the .opd
+    // descriptor (above), so direct `bl` calls target ".foo" instead -- the
+    // ELFv1 dot-symbol convention (cf. the Sony toolchain and AIX entry points).
+    // The descriptor's code word still references CurrentFnSymForSize, so the
+    // descriptor bytes are unchanged. See MO_LV2_FUNC_ENTRY / transformCallee.
+    MCSymbol *CodeSym =
+        OutContext.getOrCreateSymbol(Twine(".") + CurrentFnSym->getName());
+    if (!MF->getFunction().hasLocalLinkage())
+      OutStreamer->emitSymbolAttribute(CodeSym, MCSA_Global);
+    OutStreamer->emitLabel(CodeSym);
     return;
   }
 

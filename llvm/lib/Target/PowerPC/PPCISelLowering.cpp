@@ -5487,8 +5487,16 @@ static SDValue transformCallee(const SDValue &Callee, SelectionDAG &DAG,
     if (Subtarget.isAIXABI()) {
       return getAIXFuncEntryPointSymbolSDNode(GV);
     }
+    // PS3/Lv2: branch to the function's code-entry symbol (".foo"), not the bare
+    // symbol that labels the .opd descriptor. The compact 8-byte descriptor
+    // disables binutils' opd-optimize bl redirection, so the caller must target
+    // the code directly -- the ELFv1 dot-symbol convention. See MO_LV2_FUNC_ENTRY
+    // and PPCLinuxAsmPrinter::emitFunctionEntryLabel (which defines ".foo").
+    unsigned TargetFlags = UsePlt ? PPCII::MO_PLT : 0;
+    if (Subtarget.isLv2ABI())
+      TargetFlags = PPCII::MO_LV2_FUNC_ENTRY;
     return DAG.getTargetGlobalAddress(GV, dl, Callee.getValueType(), 0,
-                                      UsePlt ? PPCII::MO_PLT : 0);
+                                      TargetFlags);
   }
 
   if (ExternalSymbolSDNode *S = dyn_cast<ExternalSymbolSDNode>(Callee)) {

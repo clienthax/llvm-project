@@ -203,6 +203,15 @@ class ModulePass;
 
     /// MO_GOT_PCREL_FLAG = MO_PCREL_FLAG | MO_GOT_FLAG
     MO_GOT_PCREL_FLAG,
+
+    /// MO_LV2_FUNC_ENTRY - PS3/Lv2 (ELFv1) only. On a function-call target this
+    /// selects the function's code-entry symbol (".foo") rather than the bare
+    /// symbol ("foo"), which on Lv2 labels the .opd descriptor. A direct `bl`
+    /// must branch to the code, not the descriptor; binutils' opd-optimize
+    /// redirection (which standard ELFv1 relies on) is disabled for the compact
+    /// 8-byte Lv2 descriptor, so the caller references the ".foo" code symbol
+    /// directly -- the ELFv1 dot-symbol convention (cf. AIX entry-point symbols).
+    MO_LV2_FUNC_ENTRY,
   };
   } // end namespace PPCII
 
