@@ -2061,11 +2061,16 @@ void PPCLinuxAsmPrinter::emitFunctionEntryLabel() {
     // Word 0: absolute code address, R_PPC64_ADDR32 (from FK_Data_4).
     OutStreamer->emitValue(
         MCSymbolRefExpr::create(CurrentFnSymForSize, OutContext), 4 /*size*/);
-    // Word 1: low 32 bits of the module TOC base, R_PPC64_TOC (from FK_Data_4),
-    // baked by lld with no surviving dynamic reloc for a fixed EXEC.
+    // Word 1: low 32 bits of the module TOC base as R_PPC64_ADDR32 (from
+    // FK_Data_4) against the linker-synthesized `.TOC.` symbol. PS3 addresses
+    // are < 4 GB, so the low 32 bits are the full value. binutils ld resolves
+    // this natively at a 4-byte field, unlike the doubleword R_PPC64_TOC it
+    // rejects there (bfd_reloc_notsupported). A plain (S_None) reference is
+    // required: the S_TOCBASE specifier nulls the symbol and lowers to the
+    // 64-bit R_PPC64_TOC. This is exactly how the .got2 TOC slots resolve.
     MCSymbol *TOCSym = OutContext.getOrCreateSymbol(StringRef(".TOC."));
-    OutStreamer->emitValue(
-        MCSymbolRefExpr::create(TOCSym, PPC::S_TOCBASE, OutContext), 4 /*size*/);
+    OutStreamer->emitValue(MCSymbolRefExpr::create(TOCSym, OutContext),
+                           4 /*size*/);
     OutStreamer->switchSection(Current.first, Current.second);
     return;
   }

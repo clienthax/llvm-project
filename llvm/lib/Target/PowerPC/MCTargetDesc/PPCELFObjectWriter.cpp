@@ -474,12 +474,6 @@ unsigned PPCELFObjectWriter::getRelocType(const MCFixup &Fixup,
       case PPC::S_DTPREL:
         Type = ELF::R_PPC_DTPREL32;
         break;
-      case PPC::S_TOCBASE:
-        // PS3/Lv2 compact OPD: the 4-byte toc word resolves to the low 32 bits
-        // of the module TOC base. Reuses R_PPC64_TOC (#51); lld writes it at
-        // 4 bytes for Lv2 output. See LV2_ABI.md §4.
-        Type = ELF::R_PPC64_TOC;
-        break;
       default:
         Type = ELF::R_PPC_ADDR32;
       }
