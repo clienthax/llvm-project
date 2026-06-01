@@ -4983,6 +4983,15 @@ bool PPCTargetLowering::IsEligibleForTailCallOptimization_64SVR4(
     bool isCalleeExternalSymbol) const {
   bool TailCallOpt = getTargetMachine().Options.GuaranteedTailCallOpt;
 
+  // PS3/Lv2: tail calls are currently disabled. The tail-branch (TAILB from the
+  // TCRETURN pseudo) does not retarget a same-module callee to the code-entry
+  // symbol ".foo" the way the bl path does (MO_LV2_FUNC_ENTRY), so a tail call
+  // branches into the 8-byte .opd descriptor and the CPU executes data. Until the
+  // tail path honors the code-entry redirection, fall back to a normal (BL8) call,
+  // which is correct. See BREADTH_NOTES.md GAP D.
+  if (Subtarget.isLv2ABI())
+    return false;
+
   if (DisableSCO && !TailCallOpt) return false;
 
   // Variadic argument functions are not supported.
