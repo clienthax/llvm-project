@@ -270,6 +270,19 @@ def : Pat<(PPCcall (i64 texternalsym:$dst)),
 def : Pat<(PPCcall_nop (i64 texternalsym:$dst)),
           (BL8_NOP texternalsym:$dst)>;
 
+// PS3/Lv2 (ILP32 on PPC64): the direct-call callee address is an i32 tglobaladdr.
+// Emit the standard ELFv1 `bl $func` + `nop` (BL8_NOP): for a local intra-module
+// callee the linker leaves the nop and r2 is preserved (no caller-side TOC save
+// is done for direct calls -- only the indirect path saves/restores r2, because
+// it clobbers r2 with the descriptor's TOC). The i64 BL8_NOP pats above need an
+// i64 callee, and the i32 texternalsym/mcsym call_nop pats (PPCInstrInfo.td) don't
+// cover tglobaladdr -- this is the sole gap. Gated on Lv2 so non-Lv2 lowering is
+// byte-for-byte unchanged.
+def : Pat<(PPCcall_nop (i32 tglobaladdr:$dst)),
+          (BL8_NOP tglobaladdr:$dst)>, Requires<[IsLv2]>;
+def : Pat<(PPCcall_nop_rm (i32 tglobaladdr:$dst)),
+          (BL8_NOP_RM tglobaladdr:$dst)>, Requires<[IsLv2]>;
+
 def : Pat<(PPCcall_notoc (i64 tglobaladdr:$dst)),
           (BL8_NOTOC tglobaladdr:$dst)>;
 def : Pat<(PPCcall_notoc (i64 texternalsym:$dst)),
