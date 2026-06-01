@@ -207,13 +207,20 @@ let isCall = 1, PPC970_Unit = 7, isCodeGenOnly = 1,
     Requires<[IsPPC64]>;
 }
 
-// PS3/Lv2 (ILP32 on PPC64) indirect-call TOC restore. Like AIX's BL8_LDinto_toc
-// the save slot is the constant r1+40, so RST=2/RA=1/D=40 are hardcoded and there
-// is no memrix operand; unlike AIX this is the indirect (bctrl) analog, so it also
-// uses CTR8 and (because the ld reads r1 directly) X1. The pattern is on the
-// instruction and matches the operand-less PPCbctrl_load_toc_lv2{,_rm} nodes.
+// PS3/Lv2 (ILP32 on PPC64) indirect-call TOC restore. The save slot is the
+// constant r1+40 (the ELFv1 TOC doubleword), so RST=2/RA=1 and the displacement
+// are hardcoded and there is no memrix operand; unlike AIX this is the indirect
+// (bctrl) analog, so it also uses CTR8 and (because the ld reads r1 directly) X1.
+// The pattern is on the instruction and matches the operand-less
+// PPCbctrl_load_toc_lv2{,_rm} nodes.
+//
+// NB: this is a DS-form `ld`, whose D field (Inst{48..61}) holds the byte
+// displacement >> 2 (the hardware appends two zero bits). So the r1+40 slot is
+// D = 40 >> 2 = 10, NOT 40. (AIX's BL8_LDinto_toc uses a D-form where D is the
+// full byte offset, hence D=40 there -- copying that 40 here encoded ld 2,160(1),
+// which collided with a local slot and corrupted r2 after every indirect call.)
 let isCall = 1, PPC970_Unit = 7, isCodeGenOnly = 1,
-    Defs = [LR8, X2], Uses = [CTR8, RM, X1], RST = 2, RA = 1, D = 40 in {
+    Defs = [LR8, X2], Uses = [CTR8, RM, X1], RST = 2, RA = 1, D = 10 in {
   def BCTRL8_LDinto_toc_lv2 :
     XLForm_2_ext_and_DSForm_1<19, 528, 20, 0, 1, 58, 0, (outs), (ins),
                               "bctrl\n\tld 2, 40(1)", IIC_BrB,
@@ -221,7 +228,7 @@ let isCall = 1, PPC970_Unit = 7, isCodeGenOnly = 1,
     Requires<[IsPPC64, IsLv2]>;
 }
 let isCall = 1, PPC970_Unit = 7, isCodeGenOnly = 1,
-    Defs = [LR8, X2, RM], Uses = [CTR8, RM, X1], RST = 2, RA = 1, D = 40 in {
+    Defs = [LR8, X2, RM], Uses = [CTR8, RM, X1], RST = 2, RA = 1, D = 10 in {
   def BCTRL8_LDinto_toc_lv2_RM :
     XLForm_2_ext_and_DSForm_1<19, 528, 20, 0, 1, 58, 0, (outs), (ins),
                               "bctrl\n\tld 2, 40(1)", IIC_BrB,
