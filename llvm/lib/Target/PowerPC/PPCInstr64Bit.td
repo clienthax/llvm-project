@@ -298,6 +298,19 @@ def : Pat<(PPCcall (i32 tglobaladdr:$dst)),
           (BL8 tglobaladdr:$dst)>, Requires<[IsLv2]>;
 def : Pat<(PPCcall_rm (i32 tglobaladdr:$dst)),
           (BL8_RM tglobaladdr:$dst)>, Requires<[IsLv2]>;
+// Same for an i32 texternalsym callee -- a compiler-emitted libcall (memcpy,
+// memset, ...). Without these it falls to the generic 32-bit BL{,_NOP}
+// (texternalsym) pats, which clobber the 32-bit $lr (not $lr8); a non-leaf caller
+// then never saves LR and `blr` returns into its own epilogue (r1 runs off the
+// stack). Must be BL8{,_NOP} (clobber $lr8) like the tglobaladdr case above.
+def : Pat<(PPCcall_nop (i32 texternalsym:$dst)),
+          (BL8_NOP texternalsym:$dst)>, Requires<[IsLv2]>;
+def : Pat<(PPCcall_nop_rm (i32 texternalsym:$dst)),
+          (BL8_NOP_RM texternalsym:$dst)>, Requires<[IsLv2]>;
+def : Pat<(PPCcall (i32 texternalsym:$dst)),
+          (BL8 texternalsym:$dst)>, Requires<[IsLv2]>;
+def : Pat<(PPCcall_rm (i32 texternalsym:$dst)),
+          (BL8_RM texternalsym:$dst)>, Requires<[IsLv2]>;
 }
 
 def : Pat<(PPCcall_notoc (i64 tglobaladdr:$dst)),
