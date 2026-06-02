@@ -4776,10 +4776,20 @@ SDValue PPCTargetLowering::LowerFormalArguments_64SVR4(
     // If this function is vararg, store any remaining integer argument regs
     // to their spots on the stack so that they may be loaded by dereferencing
     // the result of va_next.
+    //
+    // PS3/Lv2 (ILP32 on PPC64): the parameter save area uses 8-byte slots and
+    // the callee must spill the FULL 64-bit GPRs (an 8-byte `std`), matching
+    // clang's 8-byte / big-endian-right-adjusted va_arg walk (EmitVAArg) and the
+    // real PS3 `.printf` prologue. `PtrVT` is i32 on Lv2, which would emit a
+    // 4-byte `stw` at slot+0 and leave slot+4..7 unwritten -- so va_arg would read
+    // the int right-adjusted at slot+4 (garbage) and a double from a half-written
+    // slot (0). Spill as i64 instead. For every non-Lv2 64-bit-ELF target
+    // PtrVT == i64 already, so this is byte-for-byte unchanged there.
+    EVT VarArgsRegVT = Subtarget.isLv2ABI() ? MVT::i64 : PtrVT;
     for (GPR_idx = (ArgOffset - LinkageSize) / PtrByteSize;
          GPR_idx < Num_GPR_Regs; ++GPR_idx) {
       Register VReg = MF.addLiveIn(GPR[GPR_idx], &PPC::G8RCRegClass);
-      SDValue Val = DAG.getCopyFromReg(Chain, dl, VReg, PtrVT);
+      SDValue Val = DAG.getCopyFromReg(Chain, dl, VReg, VarArgsRegVT);
       SDValue Store =
           DAG.getStore(Val.getValue(1), dl, Val, FIN, MachinePointerInfo());
       MemOps.push_back(Store);
