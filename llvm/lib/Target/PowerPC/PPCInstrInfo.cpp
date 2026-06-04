@@ -1779,6 +1779,38 @@ void PPCInstrInfo::copyPhysReg(MachineBasicBlock &MBB,
     return;
   }
 
+  // PS3 GameOS (Cell OS Lv-2) is ILP32-on-PPC64: pointers are i32 (datalayout
+  // p:32:32) and so live in GPRC, but every memory base / CTR target must be a
+  // 64-bit G8RC register. SelectionDAG therefore feeds an i32 GPRC value into a
+  // 64-bit base operand and InstrEmitter bridges the class mismatch with a bare
+  // GPRC<->G8RC COPY -- a conversion no other PPC subtarget ever produces (their
+  // pointers are i64) and which has no value-preserving register move. Lower it
+  // here as the explicit extend it is. Gated strictly on Lv2 so every other PPC
+  // target is byte-for-byte unchanged.
+  if (Subtarget.isLv2ABI()) {
+    if (PPC::G8RCRegClass.contains(DestReg) &&
+        PPC::GPRCRegClass.contains(SrcReg)) {
+      // GPRC -> G8RC: zero-extend. PS3 user addresses are < 4 GB, so the 32-bit
+      // value zero-extends into its 64-bit register (clrldi rD, rS, 32).
+      MCRegister SrcSuper =
+          TRI->getMatchingSuperReg(SrcReg, PPC::sub_32, &PPC::G8RCRegClass);
+      BuildMI(MBB, I, DL, get(PPC::RLDICL), DestReg)
+          .addReg(SrcSuper, getKillRegState(KillSrc))
+          .addImm(0)
+          .addImm(32);
+      return;
+    }
+    if (PPC::GPRCRegClass.contains(DestReg) &&
+        PPC::G8RCRegClass.contains(SrcReg)) {
+      // G8RC -> GPRC: narrow to the low 32 bits (the sub_32 sub-register).
+      MCRegister SrcSub = TRI->getSubReg(SrcReg, PPC::sub_32);
+      BuildMI(MBB, I, DL, get(PPC::OR), DestReg)
+          .addReg(SrcSub)
+          .addReg(SrcSub, getKillRegState(KillSrc));
+      return;
+    }
+  }
+
   unsigned Opc;
   if (PPC::GPRCRegClass.contains(DestReg, SrcReg))
     Opc = PPC::OR;

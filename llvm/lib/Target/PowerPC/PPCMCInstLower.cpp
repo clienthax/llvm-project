@@ -37,7 +37,12 @@ static MCSymbol *GetSymbolFromOperand(const MachineOperand &MO,
     // Get the symbol from the global, accounting for XCOFF-specific
     // intricacies (see TargetLoweringObjectFileXCOFF::getTargetSymbol).
     const GlobalValue *GV = MO.getGlobal();
-    return AP.getSymbol(GV);
+    MCSymbol *Sym = AP.getSymbol(GV);
+    // PS3/Lv2: a direct-call target references the function's code-entry symbol
+    // ".foo", not "foo" (which labels the .opd descriptor). See MO_LV2_FUNC_ENTRY.
+    if (MO.getTargetFlags() == PPCII::MO_LV2_FUNC_ENTRY)
+      return AP.OutContext.getOrCreateSymbol(Twine(".") + Sym->getName());
+    return Sym;
   }
 
   assert(MO.isSymbol() && "Isn't a symbol reference");
@@ -47,6 +52,12 @@ static MCSymbol *GetSymbolFromOperand(const MachineOperand &MO,
   Mangler::getNameWithPrefix(Name, MO.getSymbolName(), DL);
 
   MCContext &Ctx = AP.OutContext;
+  // PS3/Lv2: a direct-call target references the function's code-entry symbol
+  // ".foo", not "foo" (which labels the .opd descriptor). Same as the global
+  // case above, but for ExternalSymbol operands (e.g. compiler-generated
+  // memcpy/memset libcalls). See MO_LV2_FUNC_ENTRY / transformCallee.
+  if (MO.getTargetFlags() == PPCII::MO_LV2_FUNC_ENTRY)
+    return Ctx.getOrCreateSymbol(Twine(".") + Name);
   MCSymbol *Sym = Ctx.getOrCreateSymbol(Name);
   return Sym;
 }

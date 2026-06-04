@@ -1325,6 +1325,32 @@ void PPCAsmPrinter::emitInstruction(const MachineInstr *MI) {
     EmitToStreamer(*OutStreamer, TmpInst);
     return;
   }
+  case PPC::LWZtocL8: {
+    // PS3/Lv2: like LDtocL, but a 32-bit zero-extending load (lwz, lowered to
+    // LWZ8) of the 4-byte .got2 TOC slot. Transform %xd = LWZtocL8 @sym, %xs.
+    LowerPPCMachineInstrToMCInst(MI, TmpInst, *this);
+
+    // Change the opcode to LWZ8 (lwz into a 64-bit GPR, zero-extending).
+    TmpInst.setOpcode(PPC::LWZ8);
+
+    const MachineOperand &MO = MI->getOperand(1);
+    assert((MO.isGlobal() || MO.isCPI() || MO.isJTI() || MO.isBlockAddress()) &&
+           "Invalid operand for LWZtocL8!");
+
+    const MCSymbol *MOSymbol = getMCSymbolForTOCPseudoMO(MO, *this);
+
+    PPCMCExpr::Specifier VK = getSpecifier(MO);
+    CodeModel::Model CM =
+        IsAIX ? getCodeModel(*Subtarget, TM, MO) : TM.getCodeModel();
+    if (!MO.isCPI() || CM == CodeModel::Large)
+      MOSymbol = lookUpOrCreateTOCEntry(MOSymbol, getTOCEntryTypeForMO(MO), VK);
+
+    VK = PPC::S_TOC_LO;
+    const MCExpr *Exp = symbolWithSpecifier(MOSymbol, VK);
+    TmpInst.getOperand(1) = MCOperand::createExpr(Exp);
+    EmitToStreamer(*OutStreamer, TmpInst);
+    return;
+  }
   case PPC::ADDItocL:
   case PPC::ADDItocL8: {
     // Transform %xd = ADDItocL %xs, @sym
@@ -2017,6 +2043,44 @@ void PPCLinuxAsmPrinter::emitFunctionEntryLabel() {
       OutStreamer->emitValue(TOCDeltaExpr, 8);
     }
     return AsmPrinter::emitFunctionEntryLabel();
+  }
+
+  // PS3 GameOS (Cell OS Lv-2): the official procedure descriptor is the compact
+  // 8-byte form `{ u32 code_entry; u32 toc }` (rpcs3 `ppu_func_opd_t`), 4-byte
+  // aligned, with no environment word. See LV2_ABI.md.
+  if (Subtarget->isLv2ABI()) {
+    MCSectionSubPair Current = OutStreamer->getCurrentSection();
+    MCSectionELF *Section = OutStreamer->getContext().getELFSection(
+        ".opd", ELF::SHT_PROGBITS, ELF::SHF_WRITE | ELF::SHF_ALLOC);
+    OutStreamer->switchSection(Section);
+    OutStreamer->emitLabel(CurrentFnSym);
+    OutStreamer->emitValueToAlignment(Align(4));
+    // Word 0: absolute code address, R_PPC64_ADDR32 (from FK_Data_4).
+    OutStreamer->emitValue(
+        MCSymbolRefExpr::create(CurrentFnSymForSize, OutContext), 4 /*size*/);
+    // Word 1: low 32 bits of the module TOC base as R_PPC64_ADDR32 (from
+    // FK_Data_4) against the linker-synthesized `.TOC.` symbol. PS3 addresses
+    // are < 4 GB, so the low 32 bits are the full value. binutils ld resolves
+    // this natively at a 4-byte field, unlike the doubleword R_PPC64_TOC it
+    // rejects there (bfd_reloc_notsupported). A plain (S_None) reference is
+    // required: the S_TOCBASE specifier nulls the symbol and lowers to the
+    // 64-bit R_PPC64_TOC. This is exactly how the .got2 TOC slots resolve.
+    MCSymbol *TOCSym = OutContext.getOrCreateSymbol(StringRef(".TOC."));
+    OutStreamer->emitValue(MCSymbolRefExpr::create(TOCSym, OutContext),
+                           4 /*size*/);
+    OutStreamer->switchSection(Current.first, Current.second);
+    // Define the function's code-entry symbol ".foo" at the .text entry (the
+    // insertion point here, before the body). On Lv2 `foo` labels the .opd
+    // descriptor (above), so direct `bl` calls target ".foo" instead -- the
+    // ELFv1 dot-symbol convention (cf. the Sony toolchain and AIX entry points).
+    // The descriptor's code word still references CurrentFnSymForSize, so the
+    // descriptor bytes are unchanged. See MO_LV2_FUNC_ENTRY / transformCallee.
+    MCSymbol *CodeSym =
+        OutContext.getOrCreateSymbol(Twine(".") + CurrentFnSym->getName());
+    if (!MF->getFunction().hasLocalLinkage())
+      OutStreamer->emitSymbolAttribute(CodeSym, MCSA_Global);
+    OutStreamer->emitLabel(CodeSym);
+    return;
   }
 
   // Emit an official procedure descriptor.

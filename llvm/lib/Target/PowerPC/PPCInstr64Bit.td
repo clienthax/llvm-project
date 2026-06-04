@@ -207,6 +207,35 @@ let isCall = 1, PPC970_Unit = 7, isCodeGenOnly = 1,
     Requires<[IsPPC64]>;
 }
 
+// PS3/Lv2 (ILP32 on PPC64) indirect-call TOC restore. The save slot is the
+// constant r1+40 (the ELFv1 TOC doubleword), so RST=2/RA=1 and the displacement
+// are hardcoded and there is no memrix operand; unlike AIX this is the indirect
+// (bctrl) analog, so it also uses CTR8 and (because the ld reads r1 directly) X1.
+// The pattern is on the instruction and matches the operand-less
+// PPCbctrl_load_toc_lv2{,_rm} nodes.
+//
+// NB: this is a DS-form `ld`, whose D field (Inst{48..61}) holds the byte
+// displacement >> 2 (the hardware appends two zero bits). So the r1+40 slot is
+// D = 40 >> 2 = 10, NOT 40. (AIX's BL8_LDinto_toc uses a D-form where D is the
+// full byte offset, hence D=40 there -- copying that 40 here encoded ld 2,160(1),
+// which collided with a local slot and corrupted r2 after every indirect call.)
+let isCall = 1, PPC970_Unit = 7, isCodeGenOnly = 1,
+    Defs = [LR8, X2], Uses = [CTR8, RM, X1], RST = 2, RA = 1, D = 10 in {
+  def BCTRL8_LDinto_toc_lv2 :
+    XLForm_2_ext_and_DSForm_1<19, 528, 20, 0, 1, 58, 0, (outs), (ins),
+                              "bctrl\n\tld 2, 40(1)", IIC_BrB,
+                              [(PPCbctrl_load_toc_lv2)]>,
+    Requires<[IsPPC64, IsLv2]>;
+}
+let isCall = 1, PPC970_Unit = 7, isCodeGenOnly = 1,
+    Defs = [LR8, X2, RM], Uses = [CTR8, RM, X1], RST = 2, RA = 1, D = 10 in {
+  def BCTRL8_LDinto_toc_lv2_RM :
+    XLForm_2_ext_and_DSForm_1<19, 528, 20, 0, 1, 58, 0, (outs), (ins),
+                              "bctrl\n\tld 2, 40(1)", IIC_BrB,
+                              [(PPCbctrl_load_toc_lv2_rm)]>,
+    Requires<[IsPPC64, IsLv2]>;
+}
+
 let Predicates = [IsAIX] in {
   let isCall = 1, PPC970_Unit = 7, isCodeGenOnly = 1,
       Defs = [LR8, X2], Uses = [RM, X1], RST = 2, RA = 1, D = 40 in {
@@ -247,6 +276,42 @@ def : Pat<(PPCcall (i64 texternalsym:$dst)),
           (BL8 texternalsym:$dst)>;
 def : Pat<(PPCcall_nop (i64 texternalsym:$dst)),
           (BL8_NOP texternalsym:$dst)>;
+
+// PS3/Lv2 (ILP32 on PPC64): the direct-call callee address is an i32 tglobaladdr.
+// Two cases, by getCallOpcode():
+//  - cross-module callee  -> PPCISD::CALL_NOP -> `bl $func` + `nop` (BL8_NOP).
+//  - same-module callee    -> PPCISD::CALL     -> `bl $func`        (BL8).
+// Both must use the 64-bit BL8{,_NOP} (which clobber LR8), NOT the 32-bit
+// BL{,_NOP}. The i64 BL8 pats above need an i64 callee, and the generic i32
+// `(PPCcall (i32 tglobaladdr)) -> BL` pat in PPCInstrInfo.td would otherwise match
+// the Lv2 i32 callee and emit the 32-bit `BL`. BL defines the 32-bit $lr (as
+// dead) while the PPC64 function returns via BLR8/$lr8, so the frame lowering
+// never saves LR -- the function then returns into its own epilogue and runs the
+// stack pointer off the top. AddedComplexity makes these Lv2 pats win over the
+// generic 32-bit BL pat; Requires<[IsLv2]> leaves every non-Lv2 target unchanged.
+let AddedComplexity = 10 in {
+def : Pat<(PPCcall_nop (i32 tglobaladdr:$dst)),
+          (BL8_NOP tglobaladdr:$dst)>, Requires<[IsLv2]>;
+def : Pat<(PPCcall_nop_rm (i32 tglobaladdr:$dst)),
+          (BL8_NOP_RM tglobaladdr:$dst)>, Requires<[IsLv2]>;
+def : Pat<(PPCcall (i32 tglobaladdr:$dst)),
+          (BL8 tglobaladdr:$dst)>, Requires<[IsLv2]>;
+def : Pat<(PPCcall_rm (i32 tglobaladdr:$dst)),
+          (BL8_RM tglobaladdr:$dst)>, Requires<[IsLv2]>;
+// Same for an i32 texternalsym callee -- a compiler-emitted libcall (memcpy,
+// memset, ...). Without these it falls to the generic 32-bit BL{,_NOP}
+// (texternalsym) pats, which clobber the 32-bit $lr (not $lr8); a non-leaf caller
+// then never saves LR and `blr` returns into its own epilogue (r1 runs off the
+// stack). Must be BL8{,_NOP} (clobber $lr8) like the tglobaladdr case above.
+def : Pat<(PPCcall_nop (i32 texternalsym:$dst)),
+          (BL8_NOP texternalsym:$dst)>, Requires<[IsLv2]>;
+def : Pat<(PPCcall_nop_rm (i32 texternalsym:$dst)),
+          (BL8_NOP_RM texternalsym:$dst)>, Requires<[IsLv2]>;
+def : Pat<(PPCcall (i32 texternalsym:$dst)),
+          (BL8 texternalsym:$dst)>, Requires<[IsLv2]>;
+def : Pat<(PPCcall_rm (i32 texternalsym:$dst)),
+          (BL8_RM texternalsym:$dst)>, Requires<[IsLv2]>;
+}
 
 def : Pat<(PPCcall_notoc (i64 tglobaladdr:$dst)),
           (BL8_NOTOC tglobaladdr:$dst)>;
@@ -1494,6 +1559,13 @@ def ADDItoc8 : PPCEmitTimePseudo<(outs g8rc:$rD), (ins g8rc_nox0:$reg, tocentry:
 let mayLoad = 1 in
 def LDtocL: PPCEmitTimePseudo<(outs g8rc:$rD), (ins tocentry:$disp, g8rc_nox0:$reg),
                    "#LDtocL", []>, isPPC64;
+// PS3/Lv2 (ILP32 on PPC64): the TOC (.got2) slot is a 4-byte pointer, so the
+// TOC-low load must be a 32-bit, zero-extending lwz (lowered to LWZ8) rather
+// than LDtocL's 64-bit ld -- on big-endian a 64-bit load of a 4-byte slot reads
+// the adjacent slot. Same operands as LDtocL; only the lowered opcode differs.
+let mayLoad = 1 in
+def LWZtocL8: PPCEmitTimePseudo<(outs g8rc:$rD), (ins tocentry:$disp, g8rc_nox0:$reg),
+                   "#LWZtocL8", []>, isPPC64;
 }
 
 // Support for thread-local storage.

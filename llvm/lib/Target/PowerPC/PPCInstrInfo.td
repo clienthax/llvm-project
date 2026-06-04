@@ -573,6 +573,17 @@ def PPCbctrl_load_toc_rm : SDNode<"PPCISD::BCTRL_LOAD_TOC_RM",
                                   SDTypeProfile<0, 1, []>,
                                   [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue,
                                    SDNPVariadic]>;
+// PS3/Lv2 (ILP32 on PPC64) indirect-call TOC restore. The save slot is the
+// constant r1+40, so the restore address is hardcoded into the instruction
+// (RST=2, RA=1, D=40) and these nodes carry no explicit address operand --
+// unlike PPCbctrl_load_toc (NumOperands=1). Modeled exactly like PPCbctrl
+// (SDTNone + variadic) so a 0-operand instruction pattern matches.
+def PPCbctrl_load_toc_lv2 : SDNode<"PPCISD::BCTRL_LOAD_TOC_LV2", SDTNone,
+                                   [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue,
+                                    SDNPVariadic]>;
+def PPCbctrl_load_toc_lv2_rm : SDNode<"PPCISD::BCTRL_LOAD_TOC_LV2_RM", SDTNone,
+                                      [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue,
+                                       SDNPVariadic]>;
 def PPCbl_load_toc_rm : SDNode<"PPCISD::BL_LOAD_TOC_RM",
                             SDTypeProfile<0, 1, []>,
                             [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue,

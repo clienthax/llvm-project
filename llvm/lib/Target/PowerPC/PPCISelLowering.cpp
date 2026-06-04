@@ -3055,10 +3055,20 @@ SDValue PPCTargetLowering::getTOCEntry(SelectionDAG &DAG, const SDLoc &dl,
                     ? DAG.getRegister(PPC::R2, VT)
                     : DAG.getNode(PPCISD::GlobalBaseReg, dl, VT);
   SDValue Ops[] = { GA, Reg };
-  return DAG.getMemIntrinsicNode(
+  SDValue Entry = DAG.getMemIntrinsicNode(
       PPCISD::TOC_ENTRY, dl, DAG.getVTList(VT, MVT::Other), Ops, VT,
       MachinePointerInfo::getGOT(DAG.getMachineFunction()), std::nullopt,
       MachineMemOperand::MOLoad);
+  // On Lv2 (ILP32 on PPC64) a pointer is 32-bit while the TOC pointer register
+  // and TOC machinery are 64-bit; narrow the loaded TOC slot to the pointer
+  // type. The TOC slot itself is 4 bytes (a ppc32-style .got2 entry), and the
+  // TOC_ENTRY is selected to a 32-bit zero-extending load (LWZtocL8), so this
+  // truncate just drops the already-zero high half and keeps the SDAG
+  // type-consistent for the i32 GlobalAddress/JumpTable/ConstantPool nodes.
+  EVT PtrTy = GA.getValueType();
+  if (PtrTy != VT)
+    return DAG.getNode(ISD::TRUNCATE, dl, PtrTy, Entry);
+  return Entry;
 }
 
 SDValue PPCTargetLowering::LowerConstantPool(SDValue Op,
@@ -4766,10 +4776,20 @@ SDValue PPCTargetLowering::LowerFormalArguments_64SVR4(
     // If this function is vararg, store any remaining integer argument regs
     // to their spots on the stack so that they may be loaded by dereferencing
     // the result of va_next.
+    //
+    // PS3/Lv2 (ILP32 on PPC64): the parameter save area uses 8-byte slots and
+    // the callee must spill the FULL 64-bit GPRs (an 8-byte `std`), matching
+    // clang's 8-byte / big-endian-right-adjusted va_arg walk (EmitVAArg) and the
+    // real PS3 `.printf` prologue. `PtrVT` is i32 on Lv2, which would emit a
+    // 4-byte `stw` at slot+0 and leave slot+4..7 unwritten -- so va_arg would read
+    // the int right-adjusted at slot+4 (garbage) and a double from a half-written
+    // slot (0). Spill as i64 instead. For every non-Lv2 64-bit-ELF target
+    // PtrVT == i64 already, so this is byte-for-byte unchanged there.
+    EVT VarArgsRegVT = Subtarget.isLv2ABI() ? MVT::i64 : PtrVT;
     for (GPR_idx = (ArgOffset - LinkageSize) / PtrByteSize;
          GPR_idx < Num_GPR_Regs; ++GPR_idx) {
       Register VReg = MF.addLiveIn(GPR[GPR_idx], &PPC::G8RCRegClass);
-      SDValue Val = DAG.getCopyFromReg(Chain, dl, VReg, PtrVT);
+      SDValue Val = DAG.getCopyFromReg(Chain, dl, VReg, VarArgsRegVT);
       SDValue Store =
           DAG.getStore(Val.getValue(1), dl, Val, FIN, MachinePointerInfo());
       MemOps.push_back(Store);
@@ -4972,6 +4992,15 @@ bool PPCTargetLowering::IsEligibleForTailCallOptimization_64SVR4(
     const SmallVectorImpl<ISD::InputArg> &Ins, const Function *CallerFunc,
     bool isCalleeExternalSymbol) const {
   bool TailCallOpt = getTargetMachine().Options.GuaranteedTailCallOpt;
+
+  // PS3/Lv2: tail calls are currently disabled. The tail-branch (TAILB from the
+  // TCRETURN pseudo) does not retarget a same-module callee to the code-entry
+  // symbol ".foo" the way the bl path does (MO_LV2_FUNC_ENTRY), so a tail call
+  // branches into the 8-byte .opd descriptor and the CPU executes data. Until the
+  // tail path honors the code-entry redirection, fall back to a normal (BL8) call,
+  // which is correct. See BREADTH_NOTES.md GAP D.
+  if (Subtarget.isLv2ABI())
+    return false;
 
   if (DisableSCO && !TailCallOpt) return false;
 
@@ -5214,8 +5243,12 @@ static void LowerMemOpCallTo(
         StackPtr = DAG.getRegister(PPC::X1, MVT::i64);
       else
         StackPtr = DAG.getRegister(PPC::R1, MVT::i32);
-      PtrOff = DAG.getNode(ISD::ADD, dl, PtrVT, StackPtr,
-                           DAG.getConstant(ArgOffset, dl, PtrVT));
+      // Address the parameter save area relative to the 64-bit stack register;
+      // PtrVT is i32 on Lv2 (ILP32 on PPC64) but equals the stack register type
+      // on every other ABI.
+      EVT SPVT = StackPtr.getValueType();
+      PtrOff = DAG.getNode(ISD::ADD, dl, SPVT, StackPtr,
+                           DAG.getConstant(ArgOffset, dl, SPVT));
     }
     MemOpChains.push_back(
         DAG.getStore(Chain, dl, Arg, PtrOff, MachinePointerInfo()));
@@ -5376,9 +5409,14 @@ static unsigned getCallOpcode(PPCTargetLowering::CallFlags CFlags,
     // as it is not saved or used.
     if (Subtarget.usePointerGlueHelper())
       RetOpc = PPCISD::BL_LOAD_TOC;
+    else if (!isTOCSaveRestoreRequired(Subtarget))
+      RetOpc = PPCISD::BCTRL;
     else
-      RetOpc = isTOCSaveRestoreRequired(Subtarget) ? PPCISD::BCTRL_LOAD_TOC
-                                                   : PPCISD::BCTRL;
+      // On Lv2 the TOC restore address (r1+40) is constant and hardcoded into
+      // the instruction, so use a dedicated operand-less node; every other
+      // TOC-based ABI carries the restore address as the node's operand.
+      RetOpc = Subtarget.isLv2ABI() ? PPCISD::BCTRL_LOAD_TOC_LV2
+                                    : PPCISD::BCTRL_LOAD_TOC;
   } else if (Subtarget.isUsingPCRelativeCalls()) {
     assert(Subtarget.is64BitELFABI() && "PC Relative is only on ELF ABI.");
     RetOpc = PPCISD::CALL_NOTOC;
@@ -5403,6 +5441,9 @@ static unsigned getCallOpcode(PPCTargetLowering::CallFlags CFlags,
       llvm_unreachable("Unknown call opcode");
     case PPCISD::BCTRL_LOAD_TOC:
       RetOpc = PPCISD::BCTRL_LOAD_TOC_RM;
+      break;
+    case PPCISD::BCTRL_LOAD_TOC_LV2:
+      RetOpc = PPCISD::BCTRL_LOAD_TOC_LV2_RM;
       break;
     case PPCISD::BCTRL:
       RetOpc = PPCISD::BCTRL_RM;
@@ -5465,8 +5506,16 @@ static SDValue transformCallee(const SDValue &Callee, SelectionDAG &DAG,
     if (Subtarget.isAIXABI()) {
       return getAIXFuncEntryPointSymbolSDNode(GV);
     }
+    // PS3/Lv2: branch to the function's code-entry symbol (".foo"), not the bare
+    // symbol that labels the .opd descriptor. The compact 8-byte descriptor
+    // disables binutils' opd-optimize bl redirection, so the caller must target
+    // the code directly -- the ELFv1 dot-symbol convention. See MO_LV2_FUNC_ENTRY
+    // and PPCLinuxAsmPrinter::emitFunctionEntryLabel (which defines ".foo").
+    unsigned TargetFlags = UsePlt ? PPCII::MO_PLT : 0;
+    if (Subtarget.isLv2ABI())
+      TargetFlags = PPCII::MO_LV2_FUNC_ENTRY;
     return DAG.getTargetGlobalAddress(GV, dl, Callee.getValueType(), 0,
-                                      UsePlt ? PPCII::MO_PLT : 0);
+                                      TargetFlags);
   }
 
   if (ExternalSymbolSDNode *S = dyn_cast<ExternalSymbolSDNode>(Callee)) {
@@ -5493,8 +5542,16 @@ static SDValue transformCallee(const SDValue &Callee, SelectionDAG &DAG,
 
       SymName = getExternalFunctionEntryPointSymbol(SymName)->getName().data();
     }
+    // PS3/Lv2: like the GlobalAddress case above, a direct-call target must
+    // reference the function's code-entry symbol (".foo"), not the bare symbol
+    // that labels the .opd descriptor. This also covers compiler-generated
+    // libcalls (memcpy/memset/...), whose callee is an ExternalSymbol rather than
+    // a GlobalAddress; without it they branch into the .opd descriptor bytes.
+    unsigned TargetFlags = UsePlt ? PPCII::MO_PLT : 0;
+    if (Subtarget.isLv2ABI())
+      TargetFlags = PPCII::MO_LV2_FUNC_ENTRY;
     return DAG.getTargetExternalSymbol(SymName, Callee.getValueType(),
-                                       UsePlt ? PPCII::MO_PLT : 0);
+                                       TargetFlags);
   }
 
   // No transformation needed.
@@ -5571,14 +5628,43 @@ static void prepareDescriptorIndirectCall(SelectionDAG &DAG, SDValue &Callee,
   MachinePointerInfo MPI(CB ? CB->getCalledOperand() : nullptr);
 
   // Registers used in building the DAG.
-  const MCRegister EnvPtrReg = Subtarget.getEnvironmentPointerRegister();
   const MCRegister TOCReg = Subtarget.getTOCPointerRegister();
 
   // Offsets of descriptor members.
   const unsigned TOCAnchorOffset = Subtarget.descriptorTOCAnchorOffset();
-  const unsigned EnvPtrOffset = Subtarget.descriptorEnvironmentPointerOffset();
 
   const MVT RegVT = Subtarget.getScalarIntVT();
+
+  // PS3 GameOS (Cell OS Lv-2): the descriptor is the compact 8-byte
+  // `{ u32 code_entry; u32 toc }` form (rpcs3 `ppu_func_opd_t`) with no
+  // environment word. Load each 32-bit word and zero-extend it into the 64-bit
+  // CTR / r2; there is no r11 environment load. The TOC save/restore at r1+40 is
+  // left to the standard ELFv1 path. See LV2_ABI.md.
+  if (Subtarget.isLv2ABI()) {
+    const EVT PtrVT = Callee.getValueType();
+    const Align LdAlign(4);
+
+    // Word 0: code entry. ZEXTLOAD i32 -> i64 lowers to `lwz` into the CTR.
+    SDValue LoadFuncPtr =
+        DAG.getExtLoad(ISD::ZEXTLOAD, dl, RegVT, LDChain, Callee, MPI, MVT::i32,
+                       LdAlign, MMOFlags);
+
+    // Word 1: module TOC base. ZEXTLOAD i32 -> i64 copied into r2.
+    SDValue TOCOff = DAG.getConstant(TOCAnchorOffset, dl, PtrVT);
+    SDValue AddTOC = DAG.getNode(ISD::ADD, dl, PtrVT, Callee, TOCOff);
+    SDValue TOCPtr = DAG.getExtLoad(ISD::ZEXTLOAD, dl, RegVT, LDChain, AddTOC,
+                                    MPI.getWithOffset(TOCAnchorOffset), MVT::i32,
+                                    LdAlign, MMOFlags);
+    SDValue TOCVal = DAG.getCopyToReg(Chain, dl, TOCReg, TOCPtr, Glue);
+    Chain = TOCVal.getValue(0);
+    Glue = TOCVal.getValue(1);
+
+    prepareIndirectCall(DAG, LoadFuncPtr, Glue, Chain, dl);
+    return;
+  }
+
+  const MCRegister EnvPtrReg = Subtarget.getEnvironmentPointerRegister();
+  const unsigned EnvPtrOffset = Subtarget.descriptorEnvironmentPointerOffset();
   const Align Alignment = Subtarget.isPPC64() ? Align(8) : Align(4);
 
   // One load for the functions entry point address.
@@ -5671,19 +5757,30 @@ buildCallOperands(SmallVectorImpl<SDValue> &Ops,
     // of the TOC save offset to the stack pointer. This must be the second
     // operand: after the chain input but before any other variadic arguments.
     // For 64-bit ELFv2 ABI with PCRel, do not restore the TOC as it is not
-    // saved or used.
-    if (isTOCSaveRestoreRequired(Subtarget)) {
+    // saved or used. On Lv2 the restore address is the constant r1+40, baked
+    // into the BCTRL8_LDinto_toc_lv2 instruction, so no address operand is
+    // pushed here (the call node is operand-less, like plain BCTRL8).
+    if (isTOCSaveRestoreRequired(Subtarget) && !Subtarget.isLv2ABI()) {
       const MCRegister StackPtrReg = Subtarget.getStackPointerRegister();
 
       SDValue StackPtr = DAG.getRegister(StackPtrReg, RegVT);
       unsigned TOCSaveOffset = Subtarget.getFrameLowering()->getTOCSaveOffset();
-      SDValue TOCOff = DAG.getIntPtrConstant(TOCSaveOffset, dl);
+      // On Lv2 (ILP32 on PPC64) the pointer-sized IntPtr type is i32, so build
+      // the TOC-restore address offset directly in the 64-bit register type;
+      // otherwise the `ld 2, 40(1)` address node would be a mixed i64/i32 ADD
+      // that the `iaddrX4` (iPTR) complex pattern cannot match. Identical to
+      // getIntPtrConstant for every non-Lv2 TOC-based ABI (IntPtr == RegVT).
+      SDValue TOCOff = Subtarget.isLv2ABI()
+                           ? DAG.getConstant(TOCSaveOffset, dl, RegVT)
+                           : DAG.getIntPtrConstant(TOCSaveOffset, dl);
       SDValue AddTOC = DAG.getNode(ISD::ADD, dl, RegVT, StackPtr, TOCOff);
       Ops.push_back(AddTOC);
     }
 
-    // Add the register used for the environment pointer.
-    if (Subtarget.usesFunctionDescriptors() && !CFlags.HasNest)
+    // Add the register used for the environment pointer. The Lv2 compact
+    // descriptor has no environment word, so no r11 is set up for it.
+    if (Subtarget.usesFunctionDescriptors() && !CFlags.HasNest &&
+        !Subtarget.isLv2ABI())
       Ops.push_back(DAG.getRegister(Subtarget.getEnvironmentPointerRegister(),
                                     RegVT));
 
@@ -6387,7 +6484,12 @@ SDValue PPCTargetLowering::LowerCall_64SVR4(
 
       PtrOff = DAG.getConstant(ArgOffset, dl, StackPtr.getValueType());
 
-      PtrOff = DAG.getNode(ISD::ADD, dl, PtrVT, StackPtr, PtrOff);
+      // The outgoing-argument address is the stack pointer (X1, a 64-bit
+      // register) plus an offset, so the arithmetic is done in the stack
+      // register's type. On Lv2 (ILP32 on PPC64) PtrVT is i32 while StackPtr is
+      // i64; for every other 64-bit ABI StackPtr.getValueType() == PtrVT.
+      PtrOff = DAG.getNode(ISD::ADD, dl, StackPtr.getValueType(), StackPtr,
+                           PtrOff);
     };
 
     if (!IsFastCall) {
@@ -6443,7 +6545,8 @@ SDValue PPCTargetLowering::LowerCall_64SVR4(
         if (!isLittleEndian) {
           SDValue Const = DAG.getConstant(PtrByteSize - Size, dl,
                                           PtrOff.getValueType());
-          AddPtr = DAG.getNode(ISD::ADD, dl, PtrVT, PtrOff, Const);
+          AddPtr = DAG.getNode(ISD::ADD, dl, PtrOff.getValueType(), PtrOff,
+                               Const);
         }
         Chain = CallSeqStart = createMemcpyOutsideCallSeq(Arg, AddPtr,
                                                           CallSeqStart,
@@ -6475,7 +6578,8 @@ SDValue PPCTargetLowering::LowerCall_64SVR4(
         SDValue AddPtr = PtrOff;
         if (!isLittleEndian) {
           SDValue Const = DAG.getConstant(8 - Size, dl, PtrOff.getValueType());
-          AddPtr = DAG.getNode(ISD::ADD, dl, PtrVT, PtrOff, Const);
+          AddPtr = DAG.getNode(ISD::ADD, dl, PtrOff.getValueType(), PtrOff,
+                               Const);
         }
         Chain = CallSeqStart = createMemcpyOutsideCallSeq(Arg, AddPtr,
                                                           CallSeqStart,
@@ -6495,8 +6599,9 @@ SDValue PPCTargetLowering::LowerCall_64SVR4(
       // For aggregates larger than PtrByteSize, copy the pieces of the
       // object that fit into registers from the parameter save area.
       for (unsigned j=0; j<Size; j+=PtrByteSize) {
-        SDValue Const = DAG.getConstant(j, dl, PtrOff.getValueType());
-        SDValue AddArg = DAG.getNode(ISD::ADD, dl, PtrVT, Arg, Const);
+        SDValue Const = DAG.getConstant(j, dl, Arg.getValueType());
+        SDValue AddArg = DAG.getNode(ISD::ADD, dl, Arg.getValueType(), Arg,
+                                     Const);
         if (GPR_idx != NumGPRs) {
           unsigned LoadSizeInBits = std::min(PtrByteSize, (Size - j)) * 8;
           EVT ObjType = EVT::getIntegerVT(*DAG.getContext(), LoadSizeInBits);
@@ -6618,7 +6723,8 @@ SDValue PPCTargetLowering::LowerCall_64SVR4(
         if (Arg.getValueType() == MVT::f32 &&
             !isLittleEndian && !Flags.isInConsecutiveRegs()) {
           SDValue ConstFour = DAG.getConstant(4, dl, PtrOff.getValueType());
-          PtrOff = DAG.getNode(ISD::ADD, dl, PtrVT, PtrOff, ConstFour);
+          PtrOff = DAG.getNode(ISD::ADD, dl, PtrOff.getValueType(), PtrOff,
+                               ConstFour);
         }
 
         assert(HasParameterArea &&
@@ -6674,8 +6780,8 @@ SDValue PPCTargetLowering::LowerCall_64SVR4(
         for (unsigned i=0; i<16; i+=PtrByteSize) {
           if (GPR_idx == NumGPRs)
             break;
-          SDValue Ix = DAG.getNode(ISD::ADD, dl, PtrVT, PtrOff,
-                                   DAG.getConstant(i, dl, PtrVT));
+          SDValue Ix = DAG.getNode(ISD::ADD, dl, PtrOff.getValueType(), PtrOff,
+                                   DAG.getConstant(i, dl, PtrOff.getValueType()));
           SDValue Load =
               DAG.getLoad(PtrVT, dl, Store, Ix, MachinePointerInfo());
           MemOpChains.push_back(Load.getValue(1));
@@ -6724,10 +6830,14 @@ SDValue PPCTargetLowering::LowerCall_64SVR4(
       // Load r2 into a virtual register and store it to the TOC save area.
       setUsesTOCBasePtr(DAG);
       SDValue Val = DAG.getCopyFromReg(Chain, dl, PPC::X2, MVT::i64);
-      // TOC save area offset.
+      // TOC save area offset. The stack pointer X1 is a 64-bit register, so the
+      // save-slot address must be computed in the register type. This matters on
+      // Lv2 where PtrVT is i32 (ILP32 on PPC64) while StackPtr stays i64; for all
+      // other 64-bit ABIs StackPtr.getValueType() == PtrVT == i64.
       unsigned TOCSaveOffset = Subtarget.getFrameLowering()->getTOCSaveOffset();
-      SDValue PtrOff = DAG.getIntPtrConstant(TOCSaveOffset, dl);
-      SDValue AddPtr = DAG.getNode(ISD::ADD, dl, PtrVT, StackPtr, PtrOff);
+      EVT SPVT = StackPtr.getValueType();
+      SDValue PtrOff = DAG.getConstant(TOCSaveOffset, dl, SPVT);
+      SDValue AddPtr = DAG.getNode(ISD::ADD, dl, SPVT, StackPtr, PtrOff);
       Chain = DAG.getStore(Val.getValue(1), dl, Val, AddPtr,
                            MachinePointerInfo::getStack(
                                DAG.getMachineFunction(), TOCSaveOffset));
